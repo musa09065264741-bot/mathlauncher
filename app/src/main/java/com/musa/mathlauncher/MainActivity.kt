@@ -563,5 +563,7 @@ class MainActivity : Activity() {
             Toast.makeText(this, "$label added to dock", Toast.LENGTH_SHORT).show()
         }
         prefs.edit().putString("dock", list.joinToString(",")).apply()
-        refreshDock()
+                refreshDock()
+    }
+}
     
