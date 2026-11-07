@@ -550,4 +550,18 @@ class MainActivity : Activity() {
             cell.addView(icon, FrameLayout.LayoutParams(dp(58), dp(58), Gravity.CENTER))
             dock.addView(cell, LinearLayout.LayoutParams(0, WRAP, 1f))
         }
-        dock.visibility = if (entries.isEmpty()) View.GONE else View.VISIB
+        dock.visibility = if (entries.isEmpty()) View.GONE else View.VISIBLE
+            }
+
+    private fun toggleDock(pkg: String, label: String) {
+        val list = dockPackages().toMutableList()
+        if (list.remove(pkg)) {
+            Toast.makeText(this, "$label removed from dock", Toast.LENGTH_SHORT).show()
+        } else {
+            list.add(pkg)
+            while (list.size > 4) list.removeAt(0)
+            Toast.makeText(this, "$label added to dock", Toast.LENGTH_SHORT).show()
+        }
+        prefs.edit().putString("dock", list.joinToString(",")).apply()
+        refreshDock()
+    
