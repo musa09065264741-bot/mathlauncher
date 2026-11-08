@@ -323,6 +323,9 @@ class MainActivity : Activity() {
     private lateinit var grid: GridView
     private lateinit var dock: LinearLayout
     private lateinit var lock: LockLayer
+        private lateinit var panel: NotificationPanel
+    private var gestureStartY = -1f
+    private var topInset = 0
 
     private var apps: List<AppEntry> = emptyList()
     private val prefs by lazy { getSharedPreferences("launcher", MODE_PRIVATE) }
@@ -392,12 +395,16 @@ class MainActivity : Activity() {
         root.addView(home, FrameLayout.LayoutParams(MATCH, MATCH))
 
         lock = LockLayer(this) { lock.hide() }
+                panel = NotificationPanel(this)
+        root.addView(panel, FrameLayout.LayoutParams(MATCH, MATCH))
         root.addView(lock, FrameLayout.LayoutParams(MATCH, MATCH))
 
         ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
             val b = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             home.setPadding(0, b.top + dp(12), 0, b.bottom)
             lock.setInsets(b.top, b.bottom)
+                        panel.setInsets(b.top, b.bottom)
+            topInset = b.top
             insets
         }
 
@@ -430,9 +437,31 @@ class MainActivity : Activity() {
     // Back = bring the lock-style screen back (a launcher has nothing to close)
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
     override fun onBackPressed() {
+                if (panel.visibility == View.VISIBLE) {
+            panel.hide()
+            return
+                }
         if (lock.visibility != View.VISIBLE) lock.show(true)
     }
+    override fun onResume() {
+        super.onResume()
+        panel.render()
+    }
 
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (lock.visibility != View.VISIBLE && panel.visibility != View.VISIBLE) {
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN ->
+                    gestureStartY = if (ev.rawY > topInset && ev.rawY < topInset + dp(160)) ev.rawY else -1f
+                MotionEvent.ACTION_MOVE ->
+                    if (gestureStartY >= 0f && ev.rawY - gestureStartY > dp(80)) {
+                        gestureStartY = -1f
+                        panel.show()
+                    }
+            }
+        }
+        return super.dispatchTouchEvent(ev)
+    }
     /* ---------------- apps ---------------- */
 
     private fun loadApps() {
