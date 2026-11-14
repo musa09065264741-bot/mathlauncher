@@ -11,6 +11,7 @@ import android.graphics.Color
 import android.graphics.Outline
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.LayerDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.provider.MediaStore
@@ -34,6 +35,7 @@ import androidx.core.view.WindowInsetsCompat
 
 private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
 private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
+private const val SETTINGS_PKG = "com.musa.mathlauncher.settings"
 
 private fun Context.dp(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
@@ -48,9 +50,11 @@ class MainActivity : Activity() {
     private lateinit var lock: LockLayer
     private lateinit var panel: NotificationPanel
     private lateinit var statusBar: StatusBarView
+    private lateinit var settingsPanel: SettingsPanel
     private var gestureStartY = -1f
     private var topInset = 0
 
+    private val settings by lazy { LauncherSettings(this) }
     private var apps: List<AppEntry> = emptyList()
     private val prefs by lazy { getSharedPreferences("launcher", MODE_PRIVATE) }
 
@@ -65,6 +69,8 @@ class MainActivity : Activity() {
             loadApps()
         }
     }
+
+    private fun iconPx(): Int = dp(settings.iconDp)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -84,7 +90,7 @@ class MainActivity : Activity() {
         )
 
         grid = GridView(this).apply {
-            numColumns = 4
+            numColumns = settings.columns
             verticalSpacing = dp(18)
             stretchMode = GridView.STRETCH_COLUMN_WIDTH
             setSelector(android.R.color.transparent)
@@ -126,6 +132,9 @@ class MainActivity : Activity() {
 
         statusBar = StatusBarView(this) { panel.show() }
         root.addView(statusBar, FrameLayout.LayoutParams(MATCH, WRAP))
+
+        settingsPanel = SettingsPanel(this, settings) { applySettings() }
+        root.addView(settingsPanel, FrameLayout.LayoutParams(MATCH, MATCH))
 
         ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
             val b = insets.getInsetsIgnoringVisibility(WindowInsetsCompat.Type.systemBars())
@@ -181,7 +190,10 @@ class MainActivity : Activity() {
     }
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        if (lock.visibility != View.VISIBLE && panel.visibility != View.VISIBLE) {
+        if (lock.visibility != View.VISIBLE &&
+            panel.visibility != View.VISIBLE &&
+            settingsPanel.visibility != View.VISIBLE
+        ) {
             when (ev.actionMasked) {
                 MotionEvent.ACTION_DOWN ->
                     gestureStartY = if (ev.rawY > topInset && ev.rawY < topInset + dp(160)) ev.rawY else -1f
@@ -195,22 +207,43 @@ class MainActivity : Activity() {
         return super.dispatchTouchEvent(ev)
     }
 
-    // Back closes the notification panel, or brings the lock-style screen back
+    // Back closes settings or the notification panel, or brings the lock-style screen back
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
     override fun onBackPressed() {
-        if (panel.visibility == View.VISIBLE) {
+        if (settingsPanel.visibility == View.VISIBLE) {
+            settingsPanel.hide()
+        } else if (panel.visibility == View.VISIBLE) {
             panel.hide()
         } else if (lock.visibility != View.VISIBLE) {
             lock.show(true)
         }
     }
 
+    private fun applySettings() {
+        grid.numColumns = settings.columns
+        grid.adapter = AppAdapter()
+        refreshDock()
+    }
+
     /* ---------------- apps ---------------- */
+
+    private fun settingsEntry(): AppEntry {
+        val bg = GradientDrawable().apply { setColor(0xFF3A3A4C.toInt()) }
+        val gear = ContextCompat.getDrawable(this, android.R.drawable.ic_menu_preferences)
+        val icon: Drawable = if (gear != null) {
+            LayerDrawable(arrayOf(bg, gear)).apply {
+                setLayerInset(1, dp(14), dp(14), dp(14), dp(14))
+            }
+        } else {
+            bg
+        }
+        return AppEntry("Launcher", SETTINGS_PKG, "", icon)
+    }
 
     private fun loadApps() {
         val pm = packageManager
         val q = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
-        apps = pm.queryIntentActivities(q, 0)
+        val list = pm.queryIntentActivities(q, 0)
             .filter { it.activityInfo.packageName != packageName }
             .map {
                 AppEntry(
@@ -221,11 +254,16 @@ class MainActivity : Activity() {
                 )
             }
             .sortedBy { it.label.lowercase() }
+        apps = listOf(settingsEntry()) + list
         grid.adapter = AppAdapter()
         refreshDock()
     }
 
     private fun launch(a: AppEntry) {
+        if (a.pkg == SETTINGS_PKG) {
+            settingsPanel.show()
+            return
+        }
         try {
             startActivity(
                 Intent(Intent.ACTION_MAIN)
@@ -238,7 +276,7 @@ class MainActivity : Activity() {
         }
     }
 
-    /** iPhone-style rounded-square icon */
+    /** iPhone-style icon: rounded square or circle */
     private fun iconView(a: AppEntry): ImageView {
         return ImageView(this).apply {
             scaleType = ImageView.ScaleType.FIT_CENTER
@@ -246,7 +284,11 @@ class MainActivity : Activity() {
             clipToOutline = true
             outlineProvider = object : ViewOutlineProvider() {
                 override fun getOutline(view: View, outline: Outline) {
-                    outline.setRoundRect(0, 0, view.width, view.height, view.width * 0.225f)
+                    if (settings.circle) {
+                        outline.setOval(0, 0, view.width, view.height)
+                    } else {
+                        outline.setRoundRect(0, 0, view.width, view.height, view.width * 0.225f)
+                    }
                 }
             }
         }
@@ -263,7 +305,7 @@ class MainActivity : Activity() {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER_HORIZONTAL
             }
-            cell.addView(iconView(a), LinearLayout.LayoutParams(dp(58), dp(58)))
+            cell.addView(iconView(a), LinearLayout.LayoutParams(iconPx(), iconPx()))
             val label = TextView(this@MainActivity).apply {
                 text = a.label
                 textSize = 11f
@@ -295,7 +337,7 @@ class MainActivity : Activity() {
         }
         for (a in apps) {
             if (pkgs.size >= 4) break
-            pkgs.add(a.pkg)
+            if (a.pkg != SETTINGS_PKG) pkgs.add(a.pkg)
         }
         return pkgs.toList()
     }
@@ -319,13 +361,14 @@ class MainActivity : Activity() {
                 toggleDock(a.pkg, a.label)
                 true
             }
-            cell.addView(icon, FrameLayout.LayoutParams(dp(58), dp(58), Gravity.CENTER))
+            cell.addView(icon, FrameLayout.LayoutParams(iconPx(), iconPx(), Gravity.CENTER))
             dock.addView(cell, LinearLayout.LayoutParams(0, WRAP, 1f))
         }
         dock.visibility = if (entries.isEmpty()) View.GONE else View.VISIBLE
     }
 
     private fun toggleDock(pkg: String, label: String) {
+        if (pkg == SETTINGS_PKG) return
         val list = dockPackages().toMutableList()
         if (list.remove(pkg)) {
             Toast.makeText(this, "$label removed from dock", Toast.LENGTH_SHORT).show()
