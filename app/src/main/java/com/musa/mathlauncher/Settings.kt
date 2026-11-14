@@ -31,6 +31,12 @@ class LauncherSettings(context: Context) {
         set(v) {
             prefs.edit().putBoolean("circle", v).apply()
         }
+
+    var hidden: Set<String>
+        get() = (prefs.getStringSet("hidden", emptySet()) ?: emptySet()).toSet()
+        set(v) {
+            prefs.edit().putStringSet("hidden", HashSet(v)).apply()
+        }
 }
 
 class SettingsPanel(
@@ -44,6 +50,8 @@ class SettingsPanel(
     private val sizeValue = TextView(context)
     private val squareBtn = TextView(context)
     private val circleBtn = TextView(context)
+    private val hiddenValue = TextView(context)
+    private val showAllBtn = TextView(context)
 
     private fun px(v: Int): Int = (v * resources.displayMetrics.density).toInt()
 
@@ -115,6 +123,35 @@ class SettingsPanel(
             ViewGroup.LayoutParams.WRAP_CONTENT, px(40)
         ))
         card.addView(shapeRow, rowParams())
+
+        val hiddenRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        hiddenRow.addView(TextView(context).apply {
+            text = "Hidden apps"
+            textSize = 16f
+            setTextColor(Color.WHITE)
+        }, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        hiddenValue.textSize = 14f
+        hiddenValue.setTextColor(0xFFBBBBCC.toInt())
+        hiddenRow.addView(hiddenValue, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT
+        ).apply { rightMargin = px(10) })
+        showAllBtn.text = "Show all"
+        showAllBtn.textSize = 14f
+        showAllBtn.gravity = Gravity.CENTER
+        showAllBtn.setPadding(px(14), 0, px(14), 0)
+        showAllBtn.setOnClickListener {
+            if (settings.hidden.isNotEmpty()) {
+                settings.hidden = emptySet()
+                changed()
+            }
+        }
+        hiddenRow.addView(showAllBtn, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.WRAP_CONTENT, px(40)
+        ))
+        card.addView(hiddenRow, rowParams())
 
         val done = TextView(context).apply {
             text = "Done"
@@ -205,6 +242,9 @@ class SettingsPanel(
         sizeValue.text = settings.iconDp.toString()
         styleChip(squareBtn, !settings.circle)
         styleChip(circleBtn, settings.circle)
+        val n = settings.hidden.size
+        hiddenValue.text = "$n hidden"
+        styleChip(showAllBtn, n > 0)
     }
 
     fun show() {
