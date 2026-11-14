@@ -1,6 +1,7 @@
 package com.musa.mathlauncher
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
@@ -21,6 +22,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.ViewOutlineProvider
+import android.view.WindowManager
 import android.widget.BaseAdapter
 import android.widget.FrameLayout
 import android.widget.GridView
@@ -51,15 +53,24 @@ class MainActivity : Activity() {
     private lateinit var panel: NotificationPanel
     private lateinit var statusBar: StatusBarView
     private lateinit var settingsPanel: SettingsPanel
+    private lateinit var spotlight: SpotlightPanel
+    private lateinit var control: ControlCenter
     private var gestureStartY = -1f
+    private var gestureStartX = 0f
+    private var lastDownX = 0f
+    private var gestureFromTop = false
+    private var gestureInGrid = false
     private var topInset = 0
 
     private val settings by lazy { LauncherSettings(this) }
+    private var allApps: List<AppEntry> = emptyList()
     private var apps: List<AppEntry> = emptyList()
     private val prefs by lazy { getSharedPreferences("launcher", MODE_PRIVATE) }
 
     private val screenOffReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
+            spotlight.hide()
+            control.hide()
             lock.show(false)
         }
     }
@@ -75,6 +86,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         window.statusBarColor = Color.TRANSPARENT
         window.navigationBarColor = Color.TRANSPARENT
@@ -101,8 +113,29 @@ class MainActivity : Activity() {
         }
         grid.setOnItemClickListener { _, _, pos, _ -> launch(apps[pos]) }
         grid.setOnItemLongClickListener { _, _, pos, _ ->
-            toggleDock(apps[pos].pkg, apps[pos].label)
+            showAppMenu(apps[pos])
             true
+        }
+
+        // iPhone-style "Search" pill above the dock
+        val searchPill = TextView(this).apply {
+            text = "Search"
+            textSize = 13f
+            setTextColor(0xDDFFFFFF.toInt())
+            gravity = Gravity.CENTER
+            setPadding(dp(18), 0, dp(18), 0)
+            compoundDrawablePadding = dp(6)
+            val mag = context.getDrawable(android.R.drawable.ic_menu_search)?.mutate()
+            if (mag != null) {
+                mag.setTint(0xDDFFFFFF.toInt())
+                mag.setBounds(0, 0, dp(14), dp(14))
+                setCompoundDrawables(mag, null, null, null)
+            }
+            background = GradientDrawable().apply {
+                cornerRadius = dp(17).toFloat()
+                setColor(0x33FFFFFF)
+            }
+            setOnClickListener { spotlight.show() }
         }
 
         dock = LinearLayout(this).apply {
@@ -118,6 +151,10 @@ class MainActivity : Activity() {
         home = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             addView(grid, LinearLayout.LayoutParams(MATCH, 0, 1f))
+            addView(searchPill, LinearLayout.LayoutParams(WRAP, dp(34)).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                setMargins(0, dp(4), 0, dp(4))
+            })
             addView(dock, LinearLayout.LayoutParams(MATCH, WRAP).apply {
                 setMargins(dp(12), dp(6), dp(12), dp(12))
             })
@@ -130,7 +167,21 @@ class MainActivity : Activity() {
         panel = NotificationPanel(this)
         root.addView(panel, FrameLayout.LayoutParams(MATCH, MATCH))
 
-        statusBar = StatusBarView(this) { panel.show() }
+        spotlight = SpotlightPanel(
+            this,
+            { q -> spotlightResults(q) },
+            { a -> iconView(a) },
+            { a ->
+                spotlight.hide()
+                launch(a)
+            }
+        )
+        root.addView(spotlight, FrameLayout.LayoutParams(MATCH, MATCH))
+
+        control = ControlCenter(this) { settingsPanel.show() }
+        root.addView(control, FrameLayout.LayoutParams(MATCH, MATCH))
+
+        statusBar = StatusBarView(this) { onStatusPull() }
         root.addView(statusBar, FrameLayout.LayoutParams(MATCH, WRAP))
 
         settingsPanel = SettingsPanel(this, settings) { applySettings() }
@@ -138,9 +189,12 @@ class MainActivity : Activity() {
 
         ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
             val b = insets.getInsetsIgnoringVisibility(WindowInsetsCompat.Type.systemBars())
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
             home.setPadding(0, b.top + dp(12), 0, b.bottom)
             lock.setInsets(b.top, b.bottom)
             panel.setInsets(b.top, b.bottom)
+            spotlight.setInsets(b.top, maxOf(b.bottom, ime.bottom))
+            control.setInsets(b.top, b.bottom)
             topInset = b.top
             statusBar.setBarHeight(b.top)
             insets
@@ -189,29 +243,60 @@ class MainActivity : Activity() {
         if (hasFocus) hideSystemStatus()
     }
 
+    /** Pulling down the status bar: right side = Control Center, otherwise Notification Centre */
+    private fun onStatusPull() {
+        if (control.visibility == View.VISIBLE ||
+            spotlight.visibility == View.VISIBLE ||
+            settingsPanel.visibility == View.VISIBLE
+        ) return
+        if (lastDownX > root.width * 0.6f) control.show() else panel.show()
+    }
+
+    // Swipe down from the top edge: right side = Control Center, otherwise Notification Centre.
+    // Swipe down on the apps = Search.
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        if (lock.visibility != View.VISIBLE &&
+        if (ev.actionMasked == MotionEvent.ACTION_DOWN) lastDownX = ev.rawX
+        val free = lock.visibility != View.VISIBLE &&
             panel.visibility != View.VISIBLE &&
-            settingsPanel.visibility != View.VISIBLE
-        ) {
+            settingsPanel.visibility != View.VISIBLE &&
+            spotlight.visibility != View.VISIBLE &&
+            control.visibility != View.VISIBLE
+        if (free) {
             when (ev.actionMasked) {
-                MotionEvent.ACTION_DOWN ->
-                    gestureStartY = if (ev.rawY > topInset && ev.rawY < topInset + dp(160)) ev.rawY else -1f
-                MotionEvent.ACTION_MOVE ->
+                MotionEvent.ACTION_DOWN -> {
+                    gestureStartY = ev.rawY
+                    gestureStartX = ev.rawX
+                    gestureFromTop = ev.rawY > topInset && ev.rawY < topInset + dp(56)
+                    val loc = IntArray(2)
+                    grid.getLocationOnScreen(loc)
+                    gestureInGrid = ev.rawY >= loc[1] && ev.rawY <= loc[1] + grid.height
+                }
+                MotionEvent.ACTION_MOVE -> {
                     if (gestureStartY >= 0f && ev.rawY - gestureStartY > dp(80)) {
-                        gestureStartY = -1f
-                        panel.show()
+                        if (gestureFromTop) {
+                            gestureStartY = -1f
+                            if (gestureStartX > root.width * 0.6f) control.show() else panel.show()
+                        } else if (gestureInGrid && !grid.canScrollVertically(-1)) {
+                            gestureStartY = -1f
+                            spotlight.show()
+                        }
                     }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> gestureStartY = -1f
             }
         }
         return super.dispatchTouchEvent(ev)
     }
 
-    // Back closes settings or the notification panel, or brings the lock-style screen back
+    // Back closes whatever is open, or brings the lock-style screen back
     @Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
     override fun onBackPressed() {
         if (settingsPanel.visibility == View.VISIBLE) {
             settingsPanel.hide()
+        } else if (control.visibility == View.VISIBLE) {
+            control.hide()
+        } else if (spotlight.visibility == View.VISIBLE) {
+            spotlight.hide()
         } else if (panel.visibility == View.VISIBLE) {
             panel.hide()
         } else if (lock.visibility != View.VISIBLE) {
@@ -221,7 +306,7 @@ class MainActivity : Activity() {
 
     private fun applySettings() {
         grid.numColumns = settings.columns
-        grid.adapter = AppAdapter()
+        applyFilter()
         refreshDock()
     }
 
@@ -254,9 +339,56 @@ class MainActivity : Activity() {
                 )
             }
             .sortedBy { it.label.lowercase() }
-        apps = listOf(settingsEntry()) + list
-        grid.adapter = AppAdapter()
+        allApps = listOf(settingsEntry()) + list
+        applyFilter()
         refreshDock()
+    }
+
+    /** Visible apps = everything except the apps you hid */
+    private fun applyFilter() {
+        val hidden = settings.hidden
+        apps = allApps.filter { a -> a.pkg == SETTINGS_PKG || !hidden.contains(a.pkg) }
+        grid.adapter = AppAdapter()
+    }
+
+    /** What the Spotlight search shows: dock apps as suggestions, or matches for the text */
+    private fun spotlightResults(q: String): List<AppEntry> {
+        if (q.isEmpty()) {
+            return dockPackages().mapNotNull { p -> apps.firstOrNull { it.pkg == p } }
+        }
+        val l = q.lowercase()
+        return apps
+            .filter { it.label.lowercase().contains(l) }
+            .sortedBy { !it.label.lowercase().startsWith(l) }
+    }
+
+    private fun showAppMenu(a: AppEntry) {
+        if (a.pkg == SETTINGS_PKG) return
+        val inDock = dockPackages().contains(a.pkg)
+        val items = arrayOf(
+            if (inDock) "Remove from dock" else "Add to dock",
+            "Hide app"
+        )
+        AlertDialog.Builder(this)
+            .setTitle(a.label)
+            .setItems(items) { _, which ->
+                if (which == 0) {
+                    toggleDock(a.pkg, a.label)
+                } else {
+                    hideApp(a)
+                }
+            }
+            .show()
+    }
+
+    private fun hideApp(a: AppEntry) {
+        settings.hidden = settings.hidden + a.pkg
+        applyFilter()
+        Toast.makeText(
+            this,
+            "${a.label} hidden. Show it again in Launcher settings.",
+            Toast.LENGTH_LONG
+        ).show()
     }
 
     private fun launch(a: AppEntry) {
@@ -333,9 +465,9 @@ class MainActivity : Activity() {
         for (i in intents) {
             val p = packageManager.resolveActivity(i, PackageManager.MATCH_DEFAULT_ONLY)
                 ?.activityInfo?.packageName
-            if (p != null && p != "android" && apps.any { it.pkg == p }) pkgs.add(p)
+            if (p != null && p != "android" && allApps.any { it.pkg == p }) pkgs.add(p)
         }
-        for (a in apps) {
+        for (a in allApps) {
             if (pkgs.size >= 4) break
             if (a.pkg != SETTINGS_PKG) pkgs.add(a.pkg)
         }
@@ -352,7 +484,7 @@ class MainActivity : Activity() {
 
     private fun refreshDock() {
         dock.removeAllViews()
-        val entries = dockPackages().mapNotNull { p -> apps.firstOrNull { it.pkg == p } }
+        val entries = dockPackages().mapNotNull { p -> allApps.firstOrNull { it.pkg == p } }
         for (a in entries) {
             val cell = FrameLayout(this)
             val icon = iconView(a)
